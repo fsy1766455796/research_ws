@@ -1,0 +1,24 @@
+[INFO] [launch]: All log files can be found below /home/oit/.ros/log/2026-07-14-14-41-36-855558-oit-106867
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [bev_odometry_node-1]: process started with pid [106876]
+[bev_odometry_node-1] [INFO] [1784007697.742627367] [orbbec_bev_odometry]: Orbbec BEV odometry subscribed to /camera/depth/points. Publishing /bev_odom.
+[bev_odometry_node-1] Traceback (most recent call last):
+[bev_odometry_node-1]   File "/home/oit/research_ws/install/orbbec_bev_odometry/lib/orbbec_bev_odometry/bev_odometry_node", line 33, in <module>
+[bev_odometry_node-1]     sys.exit(load_entry_point('orbbec-bev-odometry', 'console_scripts', 'bev_odometry_node')())
+[bev_odometry_node-1]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[bev_odometry_node-1]   File "/home/oit/research_ws/build/orbbec_bev_odometry/orbbec_bev_odometry/bev_odometry_node.py", line 687, in main
+[bev_odometry_node-1]     rclpy.spin(node)
+[bev_odometry_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/__init__.py", line 247, in spin
+[bev_odometry_node-1]     executor.spin_once()
+[bev_odometry_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 926, in spin_once
+[bev_odometry_node-1]     self._spin_once_impl(timeout_sec)
+[bev_odometry_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 907, in _spin_once_impl
+[bev_odometry_node-1]     handler, entity, node = self.wait_for_ready_callbacks(
+[bev_odometry_node-1]                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[bev_odometry_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 877, in wait_for_ready_callbacks
+[bev_odometry_node-1]     return next(self._cb_iter)
+[bev_odometry_node-1]            ^^^^^^^^^^^^^^^^^^^
+[bev_odometry_node-1]   File "/opt/ros/jazzy/lib/python3.12/site-packages/rclpy/executors.py", line 785, in _wait_for_ready_callbacks
+[bev_odometry_node-1]     raise ExternalShutdownException()
+[bev_odometry_node-1] rclpy.executors.ExternalShutdownException
+[ERROR] [bev_odometry_node-1]: process has died [pid 106876, exit code 1, cmd '/home/oit/research_ws/install/orbbec_bev_odometry/lib/orbbec_bev_odometry/bev_odometry_node --ros-args -r __node:=orbbec_bev_odometry --params-file /tmp/launch_params_zjl6ffga'].

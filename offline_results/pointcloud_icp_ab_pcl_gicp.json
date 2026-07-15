@@ -1,0 +1,20 @@
+{
+  "bag": "odom_loop_test",
+  "interval_sec": 0.1,
+  "bev_ecc": {
+    "frames": 547,
+    "closure_yaw_deg": 56.10287773013538,
+    "closure_position_m": 0.9959020520321131,
+    "stationary_drift_m": 0.0
+  },
+  "pointcloud_icp": {
+    "frames": 1153,
+    "closure_yaw_deg": 0.21541906454128085,
+    "closure_position_m": 0.684504838566801,
+    "stationary_drift_m": 0.0,
+    "processing_mean_ms": 222.95457369299632,
+    "processing_p95_ms": 297.29036740318395,
+    "processing_max_ms": 949.6765449948725,
+    "realtime_factor": 0.44852185960400104
+  }
+}

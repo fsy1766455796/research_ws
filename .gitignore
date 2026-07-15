@@ -1,0 +1,21 @@
+# ROS 2 / colcon generated files
+/build/
+/install/
+/log/
+
+# Large local recordings and runtime logs
+/odom_loop_test/
+/Log/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+
+# Editor and OS files
+.vscode/
+.idea/
+*~
+.DS_Store
