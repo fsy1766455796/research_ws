@@ -41,6 +41,11 @@ setup(
     description='BEV odometry node for an Orbbec Femto Bolt depth camera.',
     license='MIT',
     extras_require={
+        'learned': [
+            'numpy',
+            'Pillow',
+            'torch',
+        ],
         'test': [
             'pytest',
         ],
@@ -50,6 +55,9 @@ setup(
             'bev_odometry_node = orbbec_bev_odometry.bev_odometry_node:main',
             'pointcloud_odometry_node = orbbec_bev_odometry.pointcloud_odometry_node:main',
             'pointcloud_offline_ab = orbbec_bev_odometry.offline_ab:main',
+            'prepare_learned_bev = orbbec_bev_odometry.prepare_learned_bev:main',
+            'train_learned_bev = orbbec_bev_odometry.train_learned_bev:main',
+            'evaluate_learned_bev = orbbec_bev_odometry.evaluate_learned_bev:main',
         ],
     },
 )

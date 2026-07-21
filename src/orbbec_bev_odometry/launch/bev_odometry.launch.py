@@ -16,6 +16,10 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_colored_point_cloud", default_value="true"),
             DeclareLaunchArgument("pointcloud_topic", default_value="/camera/depth/points"),
             DeclareLaunchArgument("pointcloud_scale_mm", default_value="1000.0"),
+            # ecc 保留原始基线；learned 使用训练后的多通道 BEV 模型。
+            DeclareLaunchArgument("odometry_backend", default_value="ecc"),
+            DeclareLaunchArgument("learned_checkpoint", default_value=""),
+            DeclareLaunchArgument("learned_device", default_value="auto"),
             # 连接里程计与相机 TF 树；若机器人 URDF 已发布该变换，可传 false 关闭。
             DeclareLaunchArgument("publish_camera_tf", default_value="true"),
             DeclareLaunchArgument("camera_parent_frame", default_value="base_link"),
@@ -104,6 +108,29 @@ def generate_launch_description():
                         "pointcloud_lateral_axis_index": LaunchConfiguration("pointcloud_lateral_axis_index"),
                         "pointcloud_vertical_axis_index": LaunchConfiguration("pointcloud_vertical_axis_index"),
                         "pointcloud_forward_axis_index": LaunchConfiguration("pointcloud_forward_axis_index"),
+                        "odometry_backend": LaunchConfiguration(
+                            "odometry_backend"
+                        ),
+                        "learned_checkpoint": LaunchConfiguration(
+                            "learned_checkpoint"
+                        ),
+                        "learned_device": LaunchConfiguration("learned_device"),
+                        "learned_camera_forward_m": LaunchConfiguration(
+                            "camera_x"
+                        ),
+                        "learned_camera_left_m": LaunchConfiguration("camera_y"),
+                        "learned_camera_height_m": LaunchConfiguration(
+                            "camera_z"
+                        ),
+                        "learned_camera_roll_rad": LaunchConfiguration(
+                            "camera_roll"
+                        ),
+                        "learned_camera_pitch_rad": LaunchConfiguration(
+                            "camera_pitch"
+                        ),
+                        "learned_camera_yaw_rad": LaunchConfiguration(
+                            "camera_yaw"
+                        ),
                         # frame-to-frame ECC 配准频率、置信度和异常步长门槛。
                         "odom_interval_sec": 0.2,
                         "min_confidence": 0.04,

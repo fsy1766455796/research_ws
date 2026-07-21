@@ -327,6 +327,21 @@ class BevOdometryNode(Node):
         self.declare_parameter("yaw_gain", 1.165)
         self.declare_parameter("ecc_iterations", 50)
         self.declare_parameter("ecc_epsilon", 1e-5)
+        # ``learned`` replaces ECC while leaving map fusion and ROS outputs intact.
+        self.declare_parameter("odometry_backend", "ecc")
+        self.declare_parameter("learned_checkpoint", "")
+        self.declare_parameter("learned_device", "auto")
+        self.declare_parameter("learned_min_confidence", 0.0)
+        # xyz has already been remapped to [lateral, vertical, forward].
+        self.declare_parameter("learned_lateral_to_left_sign", -1.0)
+        self.declare_parameter("learned_vertical_to_up_sign", -1.0)
+        self.declare_parameter("learned_forward_sign", 1.0)
+        self.declare_parameter("learned_camera_forward_m", 0.0)
+        self.declare_parameter("learned_camera_left_m", 0.0)
+        self.declare_parameter("learned_camera_height_m", 0.0)
+        self.declare_parameter("learned_camera_roll_rad", 0.0)
+        self.declare_parameter("learned_camera_pitch_rad", 0.0)
+        self.declare_parameter("learned_camera_yaw_rad", 0.0)
         # 移动时保留小转角；近静止时累积小 yaw，越过阈值后统一释放。
         self.declare_parameter("moving_yaw_deadband_deg", 0.25)
         self.declare_parameter("stationary_translation_deadband_mm", 20.0)
@@ -365,6 +380,8 @@ class BevOdometryNode(Node):
 
         # previous_bev 用于 frame-to-frame 粗估计；global_bev_map 用于漂移修正。
         self.previous_bev = None
+        self.previous_learned_bev = None
+        self.learned_runtime = None
         self.global_bev_map = None
         self.frame_to_map_score = 0.0
         self.frame_to_map_corrected = False
@@ -379,6 +396,26 @@ class BevOdometryNode(Node):
         self.total_distance_m = 0.0
         self.last_odom_time = None
 
+        self.odometry_backend = str(
+            self.get_parameter("odometry_backend").value
+        ).lower()
+        if self.odometry_backend not in ("ecc", "learned"):
+            raise ValueError("odometry_backend must be 'ecc' or 'learned'")
+        if self.odometry_backend == "learned":
+            from orbbec_bev_odometry.learned_bev_runtime import (
+                LearnedBEVRuntime,
+            )
+
+            checkpoint = str(self.get_parameter("learned_checkpoint").value)
+            if not checkpoint:
+                raise ValueError(
+                    "learned_checkpoint is required for odometry_backend=learned"
+                )
+            self.learned_runtime = LearnedBEVRuntime(
+                checkpoint,
+                device=str(self.get_parameter("learned_device").value),
+            )
+
         topic = str(self.get_parameter("pointcloud_topic").value)
         self.pointcloud_sub = self.create_subscription(
             PointCloud2,
@@ -387,7 +424,8 @@ class BevOdometryNode(Node):
             qos_profile_sensor_data,
         )
         self.get_logger().info(
-            f"Orbbec BEV odometry subscribed to {topic}. Publishing /bev_odom."
+            f"Orbbec BEV odometry ({self.odometry_backend}) subscribed to "
+            f"{topic}. Publishing /bev_odom."
         )
 
     def process_pointcloud2(self, msg):
@@ -438,6 +476,67 @@ class BevOdometryNode(Node):
             float(self.get_parameter("ground_min_inlier_ratio").value),
             float(self.get_parameter("ground_candidate_min_y_mm").value),
         )
+        learned_bev = None
+        if self.odometry_backend == "learned":
+            robot_points_m = np.column_stack(
+                (
+                    xyz[:, 2]
+                    * float(self.get_parameter("learned_forward_sign").value),
+                    xyz[:, 0]
+                    * float(
+                        self.get_parameter(
+                            "learned_lateral_to_left_sign"
+                        ).value
+                    ),
+                    xyz[:, 1]
+                    * float(
+                        self.get_parameter(
+                            "learned_vertical_to_up_sign"
+                        ).value
+                    ),
+                )
+            ).astype(np.float32) * 0.001
+            roll = float(self.get_parameter("learned_camera_roll_rad").value)
+            pitch = float(
+                self.get_parameter("learned_camera_pitch_rad").value
+            )
+            yaw = float(self.get_parameter("learned_camera_yaw_rad").value)
+            cos_r, sin_r = math.cos(roll), math.sin(roll)
+            cos_p, sin_p = math.cos(pitch), math.sin(pitch)
+            cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+            rotation_x = np.array(
+                [[1.0, 0.0, 0.0], [0.0, cos_r, -sin_r],
+                 [0.0, sin_r, cos_r]],
+                dtype=np.float32,
+            )
+            rotation_y = np.array(
+                [[cos_p, 0.0, sin_p], [0.0, 1.0, 0.0],
+                 [-sin_p, 0.0, cos_p]],
+                dtype=np.float32,
+            )
+            rotation_z = np.array(
+                [[cos_y, -sin_y, 0.0], [sin_y, cos_y, 0.0],
+                 [0.0, 0.0, 1.0]],
+                dtype=np.float32,
+            )
+            robot_points_m = robot_points_m @ (
+                rotation_z @ rotation_y @ rotation_x
+            ).T
+            robot_points_m += np.array(
+                [
+                    float(
+                        self.get_parameter("learned_camera_forward_m").value
+                    ),
+                    float(
+                        self.get_parameter("learned_camera_left_m").value
+                    ),
+                    float(
+                        self.get_parameter("learned_camera_height_m").value
+                    ),
+                ],
+                dtype=np.float32,
+            )
+            learned_bev = self.learned_runtime.make_bev(robot_points_m)
 
         dx_mm = 0.0
         dz_mm = 0.0
@@ -449,18 +548,36 @@ class BevOdometryNode(Node):
 
         # 第二步：current BEV vs previous BEV，得到增量运动的粗估计。
         if self.previous_bev is not None:
-            dx_mm, dz_mm, raw_yaw_step_rad, response, _ = estimate_motion_mm(
-                self.previous_bev,
-                bev,
-                float(self.get_parameter("x_min_mm").value),
-                float(self.get_parameter("z_min_mm").value),
-                float(self.get_parameter("resolution_mm").value),
-                int(self.get_parameter("ecc_iterations").value),
-                float(self.get_parameter("ecc_epsilon").value),
-            )
-            yaw_step_rad = float(self.get_parameter("ros_yaw_sign").value) * raw_yaw_step_rad
-            raw_ros_yaw_step_rad = yaw_step_rad
-            yaw_step_rad *= float(self.get_parameter("yaw_gain").value)
+            if self.odometry_backend == "learned":
+                learned_pose, response = self.learned_runtime.estimate(
+                    self.previous_learned_bev, learned_bev
+                )
+                ros_forward_sign = float(
+                    self.get_parameter("ros_forward_sign").value
+                )
+                ros_lateral_sign = float(
+                    self.get_parameter("ros_lateral_sign").value
+                )
+                dz_mm = learned_pose[0] * 1000.0 / ros_forward_sign
+                dx_mm = learned_pose[1] * 1000.0 / ros_lateral_sign
+                yaw_step_rad = float(learned_pose[2])
+                raw_ros_yaw_step_rad = yaw_step_rad
+            else:
+                dx_mm, dz_mm, raw_yaw_step_rad, response, _ = estimate_motion_mm(
+                    self.previous_bev,
+                    bev,
+                    float(self.get_parameter("x_min_mm").value),
+                    float(self.get_parameter("z_min_mm").value),
+                    float(self.get_parameter("resolution_mm").value),
+                    int(self.get_parameter("ecc_iterations").value),
+                    float(self.get_parameter("ecc_epsilon").value),
+                )
+                yaw_step_rad = (
+                    float(self.get_parameter("ros_yaw_sign").value)
+                    * raw_yaw_step_rad
+                )
+                raw_ros_yaw_step_rad = yaw_step_rad
+                yaw_step_rad *= float(self.get_parameter("yaw_gain").value)
 
             # 消除毫米级抖动，并根据运动类型选择不同的 yaw 死区。
             min_motion_mm = float(self.get_parameter("min_motion_mm").value)
@@ -479,8 +596,13 @@ class BevOdometryNode(Node):
                 dz_mm = 0.0
                 step_mm = 0.0
 
+            confidence_parameter = (
+                "learned_min_confidence"
+                if self.odometry_backend == "learned"
+                else "min_confidence"
+            )
             motion_is_credible = (
-                response >= float(self.get_parameter("min_confidence").value)
+                response >= float(self.get_parameter(confidence_parameter).value)
                 and step_mm <= float(self.get_parameter("max_step_mm").value)
             )
             if motion_is_credible and (
@@ -590,6 +712,8 @@ class BevOdometryNode(Node):
         self.total_forward_m = corrected_forward
         # 当前帧始终成为下一帧粗匹配的参考图。
         self.previous_bev = bev.copy()
+        if learned_bev is not None:
+            self.previous_learned_bev = learned_bev.copy()
         self.publish_odometry(
             dx_mm,
             dz_mm,
@@ -703,7 +827,8 @@ class BevOdometryNode(Node):
         # 文本调试话题同时记录粗估计、地图修正量和最终位姿，便于 rosbag 分析。
         debug = String()
         debug.data = (
-            f"accepted={accepted} dx_mm={dx_mm:+.1f} dz_mm={dz_mm:+.1f} "
+            f"backend={self.odometry_backend} accepted={accepted} "
+            f"dx_mm={dx_mm:+.1f} dz_mm={dz_mm:+.1f} "
             f"x_m={self.total_forward_m:+.3f} y_m={self.total_lateral_m:+.3f} "
             f"yaw_deg={math.degrees(self.total_yaw_rad):+.1f} "
             f"yaw_step_deg={math.degrees(yaw_step_rad):+.1f} "
