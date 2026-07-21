@@ -6,6 +6,8 @@
 # Large local recordings and runtime logs
 /odom_loop_test/
 /Log/
+/bev_odom_bag/
+/bev_odom_test_02/
 
 # Python generated files
 __pycache__/
