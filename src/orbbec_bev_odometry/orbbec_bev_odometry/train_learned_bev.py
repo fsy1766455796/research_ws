@@ -58,7 +58,7 @@ def _summarize(total):
     }
 
 
-def _run_epoch(model, loader, device, optimizer=None, scaler=None):
+def _run_epoch(model, loader, device, loss_weights, optimizer=None, scaler=None):
     training = optimizer is not None
     model.train(training)
     totals = {}
@@ -77,7 +77,7 @@ def _run_epoch(model, loader, device, optimizer=None, scaler=None):
                 enabled=amp_enabled,
             ):
                 output = model(previous, current)
-                losses = learned_bev_loss(output, target)
+            losses = learned_bev_loss(output, target, **loss_weights)
             if training:
                 scaler.scale(losses["loss"]).backward()
                 scaler.unscale_(optimizer)
@@ -116,8 +116,42 @@ def build_argument_parser():
     parser.add_argument("--forward-max-m", type=float, default=6.0)
     parser.add_argument("--left-min-m", type=float, default=-3.5)
     parser.add_argument("--left-max-m", type=float, default=3.5)
+    parser.add_argument("--translation-weight", type=float, default=1.0)
+    parser.add_argument("--yaw-weight", type=float, default=2.0)
+    parser.add_argument("--correlation-weight", type=float, default=0.25)
+    parser.add_argument("--static-weight", type=float, default=0.5)
+    parser.add_argument("--step-length-weight", type=float, default=0.5)
+    parser.add_argument("--confidence-weight", type=float, default=0.05)
+    parser.add_argument(
+        "--best-score",
+        choices=("translation", "combined"),
+        default="translation",
+        help=(
+            "Metric for best.pt. combined also penalizes yaw RMSE and "
+            "distance-ratio error."
+        ),
+    )
+    parser.add_argument(
+        "--pretrained-checkpoint",
+        help="Load only model weights before starting a fresh training run.",
+    )
     parser.add_argument("--resume")
     return parser
+
+
+def _checkpoint_score(summary, mode):
+    if mode == "translation":
+        return summary["translation_rmse_m"]
+    distance_ratio = summary.get("distance_ratio")
+    distance_penalty = (
+        abs(float(distance_ratio) - 1.0)
+        if distance_ratio is not None else 1.0
+    )
+    return (
+        summary["translation_rmse_m"]
+        + 0.01 * summary["yaw_rmse_deg"]
+        + 0.02 * distance_penalty
+    )
 
 
 def main(argv=None):
@@ -150,6 +184,31 @@ def main(argv=None):
         "bev_width": int(sample.shape[2]),
     }
     model = LearnedBEVOdometry(**model_config).to(device)
+    if args.pretrained_checkpoint:
+        pretrained = torch.load(args.pretrained_checkpoint, map_location=device)
+        pretrained_config = pretrained.get("model_config", {})
+        if pretrained_config and pretrained_config != model_config:
+            print(
+                json.dumps(
+                    {
+                        "warning": (
+                            "pretrained model_config differs from current "
+                            "model_config; loading state_dict strictly"
+                        ),
+                        "pretrained_model_config": pretrained_config,
+                        "current_model_config": model_config,
+                    }
+                )
+            )
+        model.load_state_dict(pretrained["model_state"])
+    loss_weights = {
+        "translation_weight": args.translation_weight,
+        "yaw_weight": args.yaw_weight,
+        "correlation_weight": args.correlation_weight,
+        "static_weight": args.static_weight,
+        "step_length_weight": args.step_length_weight,
+        "confidence_weight": args.confidence_weight,
+    }
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
@@ -223,6 +282,9 @@ def main(argv=None):
                 "train_static_pairs": static_count,
                 "validation_pairs": len(validation_dataset),
                 "model_config": model_config,
+                "loss_weights": loss_weights,
+                "best_score": args.best_score,
+                "pretrained_checkpoint": args.pretrained_checkpoint,
             },
             indent=2,
         )
@@ -231,10 +293,17 @@ def main(argv=None):
     for epoch in range(start_epoch, args.epochs):
         started = time.time()
         train_summary = _run_epoch(
-            model, train_loader, device, optimizer=optimizer, scaler=scaler
+            model,
+            train_loader,
+            device,
+            loss_weights,
+            optimizer=optimizer,
+            scaler=scaler,
         )
         with torch.no_grad():
-            validation_summary = _run_epoch(model, validation_loader, device)
+            validation_summary = _run_epoch(
+                model, validation_loader, device, loss_weights
+            )
         scheduler.step()
         epoch_summary = {
             "epoch": epoch,
@@ -254,6 +323,9 @@ def main(argv=None):
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
             "best_validation": best_validation,
+            "best_score": args.best_score,
+            "loss_weights": loss_weights,
+            "pretrained_checkpoint": args.pretrained_checkpoint,
             "train_manifest": str(Path(args.train_manifest).resolve()),
             "validation_manifest": str(
                 Path(args.validation_manifest).resolve()
@@ -262,7 +334,7 @@ def main(argv=None):
             "preprocessing_metadata": preprocessing_metadata,
         }
         torch.save(checkpoint, output_dir / "last.pt")
-        score = validation_summary["translation_rmse_m"]
+        score = _checkpoint_score(validation_summary, args.best_score)
         if score < best_validation:
             best_validation = score
             checkpoint["best_validation"] = best_validation

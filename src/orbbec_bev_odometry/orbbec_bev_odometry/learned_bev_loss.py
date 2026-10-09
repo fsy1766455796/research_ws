@@ -79,7 +79,7 @@ def learned_bev_loss(
         )
     ).clamp(0.0, 1.0)
     confidence_loss = functional.binary_cross_entropy(
-        output["confidence"], confidence_target
+        output["confidence"].float(), confidence_target.float()
     )
     total = (
         translation_weight * translation_loss
