@@ -1,31 +1,19 @@
-# BEV odometry checkpoints
+# BEV 里程计模型权重
 
-Snapshots of the locally trained OpenLORIS models. Files are copied without
-modifying checkpoint contents. Each directory includes `best.pt`, `last.pt`,
-and the recorded `history.jsonl`.
+本目录保存使用 OpenLORIS 数据在本地训练的模型。文件从原训练目录复制，未修改权重或检查点内容。每个版本均包含最佳权重 `best.pt`、最后一次保存的权重 `last.pt` 和训练日志 `history.jsonl`。
 
-| Version | Directory | Best epoch (zero-based) | Last epoch (zero-based) |
+| 版本 | 目录 | 最佳权重轮次（从 0 开始） | 最后保存轮次（从 0 开始） |
 | --- | --- | --- | --- |
 | A0 | `aligned_depth` | 27 | 39 |
 | A1 | `aligned_depth_yaw4` | 20 | 39 |
 | A2 | `aligned_depth_localmap_w5_a2` | 1 | 8 |
 
-- A0 uses measured aligned depth and the original training setup.
-- A1 uses measured aligned depth, yaw loss weight 4, and combined validation
-  scoring. `aligned_depth_yaw4/best.pt` is the A1 checkpoint used in the
-  preceding measured-depth and DA3-input evaluations.
-- A2 is a local-map training snapshot initialized from A1, with yaw loss
-  weight 6 and combined validation scoring. Only nine epochs are present in
-  this snapshot; it is not a completed 40-epoch run.
+- A0：使用实测对齐深度和原始训练设置。
+- A1：使用实测对齐深度，偏航角损失权重为 4，按综合验证评分选择最佳权重。此前实测深度和 DA3 深度输入的 A1 对比实验使用的是 `aligned_depth_yaw4/best.pt`。
+- A2：从 A1 初始化的局部地图训练版本，偏航角损失权重为 6，按综合验证评分选择最佳权重。目前保存了 9 轮训练记录，属于阶段性版本，并非已完成 40 轮训练的模型。
 
-Use `best.pt` for evaluation of the validation-selected model. `last.pt`
-preserves the latest saved training state for resuming. These checkpoints
-are not DA3-fine-tuned models.
+评估时使用由验证集评分选出的 `best.pt`；继续训练时可使用保存了最近训练状态的 `last.pt`。这些模型均未经 DA3 深度微调。
 
-The checkpoints contain model configuration and training state in addition
-to model weights. Recorded manifest and pretraining paths refer to the
-original Windows machine. Supply paths to your own data when running on
-another machine; the dataset and BEV caches are not included here.
+检查点除模型权重外，还包含模型配置和训练状态。其中记录的数据清单路径及预训练权重路径来自原 Windows 电脑。换电脑运行时，需要传入当前电脑上的实际数据路径；本目录不包含数据集和 BEV 缓存。
 
-For A1 evaluation, pass `checkpoints/aligned_depth_yaw4/best.pt` as the
-checkpoint path. Local smoke-test checkpoints are intentionally omitted.
+评估 A1 时，权重路径使用 `checkpoints/aligned_depth_yaw4/best.pt`。仅用于检查流程能否运行的临时测试权重未上传。
