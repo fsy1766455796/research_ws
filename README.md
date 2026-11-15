@@ -116,3 +116,11 @@ Main dependencies: Python 3, PyTorch, OpenCV, NumPy, SciPy, LightGlue, Hugging F
 ## Acknowledgements
 
 OpenLORIS-Scene dataset; Depth Anything 3; SuperPoint and LightGlue; DINOv2; BEV-DWPVO (used as a reference baseline).
+
+## License / ライセンス
+
+Copyright (c) 2026 Feng Siyuan. All rights reserved.
+
+This repository is published for viewing only. No permission is granted to use, copy, modify or redistribute the code, models or figures without the author's written permission.
+
+本リポジトリは閲覧のみを目的として公開しています。作者の書面による許可なく、コード・モデル・図の使用、複製、改変、再配布を禁じます。
