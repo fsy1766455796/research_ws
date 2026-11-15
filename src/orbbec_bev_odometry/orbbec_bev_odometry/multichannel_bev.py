@@ -176,6 +176,9 @@ def points_to_multichannel_bev(
         np.int32
     )
 
+    # float32 rounding can put a point just below the max bound into the next cell
+    rows = np.minimum(rows, cfg.height - 1)
+    cols = np.minimum(cols, cfg.width - 1)
     counts = np.zeros((cfg.height, cfg.width), dtype=np.float32)
     height_sum = np.zeros_like(counts)
     height_square_sum = np.zeros_like(counts)

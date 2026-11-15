@@ -131,6 +131,7 @@ class SE2Correlation(nn.Module):
         max_translation_m=0.8,
         max_yaw_deg=20.0,
         yaw_bins=41,
+        correlation_mode="legacy",
     ):
         """Configure metric translation and yaw search bounds."""
         super().__init__()
@@ -138,11 +139,15 @@ class SE2Correlation(nn.Module):
             raise ValueError("yaw_bins must be an odd integer of at least 3")
         self.metric_bounds = tuple(float(value) for value in metric_bounds)
         self.max_translation_m = float(max_translation_m)
+        if correlation_mode not in ("legacy", "cosine"):
+            raise ValueError("correlation_mode must be legacy or cosine")
+        self.correlation_mode = correlation_mode
         yaw_values = torch.linspace(
             -math.radians(max_yaw_deg), math.radians(max_yaw_deg), yaw_bins
         )
         self.register_buffer("yaw_values", yaw_values)
-        self.logit_scale = nn.Parameter(torch.tensor(math.log(10.0)))
+        initial = math.log(10.0) if correlation_mode == "legacy" else math.log(9.0 / 191.0)
+        self.logit_scale = nn.Parameter(torch.tensor(initial))
 
     @staticmethod
     def _linear_correlation(previous, current):
@@ -199,8 +204,14 @@ class SE2Correlation(nn.Module):
             centre_row + forward_shift_count + 1,
             centre_col - left_shift_count:centre_col + left_shift_count + 1,
         ]
-        scale = torch.exp(self.logit_scale).clamp(max=100.0)
-        logits = correlation * scale / max(channels * height * width, 1)
+        if self.correlation_mode == "legacy":
+            scale = torch.exp(self.logit_scale).clamp(max=100.0)
+            logits = correlation * scale / max(channels * height * width, 1)
+        else:
+            # Channel-normalized dot products are already cosine similarities.
+            # A smooth bounded temperature avoids the legacy hard-clamp dead zone.
+            scale = 1.0 + 200.0 * torch.sigmoid(self.logit_scale)
+            logits = correlation * scale / max(height * width, 1)
         probability = torch.softmax(logits.flatten(1), dim=1).reshape_as(logits)
 
         forward_values = torch.arange(
@@ -305,6 +316,8 @@ class LearnedBEVOdometry(nn.Module):
         yaw_bins=41,
         bev_height=140,
         bev_width=140,
+        yaw_residual_deg=None,
+        correlation_mode="legacy",
     ):
         """Create the encoder, explicit matcher and fine refiner."""
         super().__init__()
@@ -316,6 +329,7 @@ class LearnedBEVOdometry(nn.Module):
             max_translation_m=max_translation_m,
             max_yaw_deg=max_yaw_deg,
             yaw_bins=yaw_bins,
+            correlation_mode=correlation_mode,
         )
         coarse_height = ((int(bev_height) + 1) // 2 + 1) // 2
         coarse_width = ((int(bev_width) + 1) // 2 + 1) // 2
@@ -324,6 +338,10 @@ class LearnedBEVOdometry(nn.Module):
             (self.metric_bounds[3] - self.metric_bounds[2]) / coarse_width,
         )
         yaw_step = 2.0 * math.radians(max_yaw_deg) / (yaw_bins - 1)
+        if yaw_residual_deg is not None:
+            if not math.isfinite(yaw_residual_deg) or yaw_residual_deg <= 0:
+                raise ValueError("yaw_residual_deg must be finite and positive")
+            yaw_step = math.radians(yaw_residual_deg)
         self.refiner = FinePoseRefiner(
             feature_channels=32,
             translation_limit=coarse_cell_m,

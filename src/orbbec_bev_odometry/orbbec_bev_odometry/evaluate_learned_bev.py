@@ -39,62 +39,157 @@ def _compose(pose, increment):
     )
 
 
+def _continuous_segments(rows):
+    """Select non-overlapping pairs, retaining the existing 7-digit time grid.
+
+    Prefer the earliest start, then the earliest end; exact duplicate intervals
+    keep their input order. Reject invalid intervals before overlap filtering.
+    """
+    timed_rows = []
+    for row in rows:
+        start = round(float(row["timestamp_0"]), 7)
+        end = round(float(row["timestamp_1"]), 7)
+        if not (math.isfinite(start) and math.isfinite(end) and end > start):
+            raise ValueError("Pair timestamps must be finite and end after start")
+        timed_rows.append((start, end, row))
+    segments = []
+    endpoint = None
+    for start, end, row in sorted(timed_rows, key=lambda item: item[:2]):
+        if endpoint is not None and start < endpoint:
+            continue
+        if endpoint is None or start != endpoint:
+            segments.append([])
+        segments[-1].append(row)
+        endpoint = end
+    return segments
+
+
 def _trajectory_metrics(rows):
+    """Pool start-aligned segment errors, including one zero origin per segment.
+
+    Yaw RMSE uses wrapped heading differences at every pose. Cumulative endpoint
+    yaw error is signed sum(predicted increments - target increments), unwrapped.
+    Coverage counts selected pairs and their duration against all input pairs
+    and the full sequence time span, respectively. Endpoints are only meaningful
+    per segment, so sequence endpoint scalars are null for multiple segments.
+    """
     grouped = {}
     for row in rows:
         grouped.setdefault(row["sequence"], []).append(row)
     output = {}
     for sequence, sequence_rows in grouped.items():
-        by_start = {round(row["timestamp_0"], 7): row for row in sequence_rows}
-        current = min(sequence_rows, key=lambda row: row["timestamp_0"])
-        predicted_pose = np.zeros(3, dtype=np.float64)
-        target_pose = np.zeros(3, dtype=np.float64)
-        errors = [0.0]
-        predicted_distance = 0.0
-        target_distance = 0.0
-        false_steps = 0
-        used = 0
-        while current is not None:
-            predicted_step = math.hypot(
-                current["pred_forward_m"], current["pred_left_m"]
-            )
-            target_step = math.hypot(
-                current["target_forward_m"], current["target_left_m"]
-            )
-            predicted_distance += predicted_step
-            target_distance += target_step
-            false_steps += int(predicted_step > 0.10 and target_step <= 0.10)
-            predicted_pose = _compose(
-                predicted_pose,
-                (current["pred_forward_m"], current["pred_left_m"],
-                 current["pred_yaw_rad"]),
-            )
-            target_pose = _compose(
-                target_pose,
-                (current["target_forward_m"], current["target_left_m"],
-                 current["target_yaw_rad"]),
-            )
-            errors.append(float(np.linalg.norm(
-                predicted_pose[:2] - target_pose[:2]
-            )))
-            used += 1
-            current = by_start.get(round(current["timestamp_1"], 7))
+        segments = []
+        all_errors = []
+        all_yaw_errors = []
+        for chain in _continuous_segments(sequence_rows):
+            metrics, errors, yaw_errors = _segment_metrics(chain)
+            segments.append(metrics)
+            all_errors.extend(errors)
+            all_yaw_errors.extend(yaw_errors)
+        used = sum(segment["chain_pairs"] for segment in segments)
+        predicted_distance = sum(s["predicted_distance_m"] for s in segments)
+        target_distance = sum(s["target_distance_m"] for s in segments)
+        covered_duration = sum(s["duration_s"] for s in segments)
+        sequence_span = (
+            max(round(float(r["timestamp_1"]), 7) for r in sequence_rows)
+            - min(round(float(r["timestamp_0"]), 7) for r in sequence_rows)
+        )
         output[sequence] = {
+            "input_pairs": len(sequence_rows),
             "chain_pairs": used,
-            "ate_rmse_m": float(np.sqrt(np.mean(np.square(errors)))),
-            "endpoint_translation_error_m": errors[-1],
-            "endpoint_yaw_error_deg": abs(math.degrees(_wrap(
-                predicted_pose[2] - target_pose[2]
-            ))),
+            "skipped_pairs": len(sequence_rows) - used,
+            "pair_coverage_ratio": used / len(sequence_rows),
+            "covered_duration_s": covered_duration,
+            "sequence_span_s": sequence_span,
+            "time_coverage_ratio": covered_duration / sequence_span,
+            "segment_count": len(segments),
+            "segments": segments,
+            "ate_rmse_m": float(np.sqrt(np.mean(np.square(all_errors)))),
+            "yaw_rmse_deg": float(np.sqrt(np.mean(np.square(all_yaw_errors)))),
             "predicted_distance_m": predicted_distance,
             "target_distance_m": target_distance,
             "distance_ratio": (
                 predicted_distance / target_distance
                 if target_distance > 1e-9 else None
             ),
-            "false_step_over_10cm_count": false_steps,
+            "false_step_over_10cm_count": sum(
+                s["false_step_over_10cm_count"] for s in segments
+            ),
         }
+        for field in (
+            "endpoint_translation_error_m", "endpoint_yaw_error_deg",
+            "endpoint_cumulative_yaw_error_deg",
+        ):
+            output[sequence][field] = (
+                segments[0][field] if len(segments) == 1 else None
+            )
     return output
+
+
+def _segment_metrics(chain):
+    """Integrate one continuous segment from a shared zero pose."""
+    predicted_pose = np.zeros(3, dtype=np.float64)
+    target_pose = np.zeros(3, dtype=np.float64)
+    errors = [0.0]
+    yaw_errors = [0.0]
+    cumulative_yaw_error = 0.0
+    predicted_distance = 0.0
+    target_distance = 0.0
+    false_steps = 0
+    for current in chain:
+        predicted_step = math.hypot(
+            current["pred_forward_m"], current["pred_left_m"]
+        )
+        target_step = math.hypot(
+            current["target_forward_m"], current["target_left_m"]
+        )
+        predicted_distance += predicted_step
+        target_distance += target_step
+        false_steps += int(predicted_step > 0.10 and target_step <= 0.10)
+        predicted_pose = _compose(
+            predicted_pose,
+            (current["pred_forward_m"], current["pred_left_m"],
+             current["pred_yaw_rad"]),
+        )
+        target_pose = _compose(
+            target_pose,
+            (current["target_forward_m"], current["target_left_m"],
+             current["target_yaw_rad"]),
+        )
+        errors.append(float(np.linalg.norm(
+            predicted_pose[:2] - target_pose[:2]
+        )))
+        yaw_errors.append(math.degrees(_wrap(
+            predicted_pose[2] - target_pose[2]
+        )))
+        cumulative_yaw_error += (
+            current["pred_yaw_rad"] - current["target_yaw_rad"]
+        )
+    start = round(float(chain[0]["timestamp_0"]), 7)
+    end = round(float(chain[-1]["timestamp_1"]), 7)
+    metrics = {
+        "timestamp_0": start,
+        "timestamp_1": end,
+        "duration_s": end - start,
+        "chain_pairs": len(chain),
+        "ate_rmse_m": float(np.sqrt(np.mean(np.square(errors)))),
+        "yaw_rmse_deg": float(np.sqrt(np.mean(np.square(yaw_errors)))),
+        "endpoint_translation_error_m": errors[-1],
+        "endpoint_yaw_error_deg": abs(math.degrees(_wrap(
+            predicted_pose[2] - target_pose[2]
+        ))),
+        "endpoint_cumulative_yaw_error_deg": math.degrees(
+            cumulative_yaw_error
+        ),
+        "predicted_distance_m": predicted_distance,
+        "target_distance_m": target_distance,
+        "distance_ratio": (
+            predicted_distance / target_distance
+            if target_distance > 1e-9 else None
+        ),
+        "false_step_over_10cm_count": false_steps,
+    }
+    return metrics, errors, yaw_errors
 
 
 def build_argument_parser():

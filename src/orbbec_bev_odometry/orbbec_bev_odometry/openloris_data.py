@@ -62,6 +62,34 @@ def resolve_sequence_dir(dataset_root, sequence):
     return matches[0]
 
 
+def sequence_calibration(dataset_root, sequence):
+    """Colour intrinsics (fx, fy, cx, cy), image size (w, h) and T_base_color of one sequence.
+
+    Read from the sequence's ``sensors.yaml`` (intrinsics stored as fx, cx, fy, cy)
+    and ``trans_matrix.yaml`` (chain base_link -> ... -> d400_color_optical_frame);
+    scenes use different mounts (market1 goes through ``laser``).
+    """
+    import cv2
+    d = resolve_sequence_dir(dataset_root, sequence)
+    fs = cv2.FileStorage(str(d / "sensors.yaml"), cv2.FILE_STORAGE_READ)
+    node = fs.getNode("d400_color_optical_frame")
+    fx, cx, fy, cy = node.getNode("intrinsics").mat().ravel()
+    size = (int(node.getNode("width").real()), int(node.getNode("height").real()))
+    fs.release()
+    fs = cv2.FileStorage(str(d / "trans_matrix.yaml"), cv2.FILE_STORAGE_READ)
+    edges = {}
+    tm = fs.getNode("trans_matrix")
+    for i in range(tm.size()):
+        n = tm.at(i)
+        edges[n.getNode("child_frame").string()] = (n.getNode("parent_frame").string(), n.getNode("matrix").mat())
+    fs.release()
+    t, frame = np.eye(4), "d400_color_optical_frame"
+    while frame != "base_link":
+        parent, m = edges[frame]
+        t, frame = m @ t, parent
+    return (float(fx), float(fy), float(cx), float(cy)), size, t
+
+
 def bev_cache_path(cache_root, sequence, timestamp):
     """Return the canonical cache filename for one timestamp."""
     return Path(cache_root) / sequence / f"{float(timestamp):.8f}.npz"

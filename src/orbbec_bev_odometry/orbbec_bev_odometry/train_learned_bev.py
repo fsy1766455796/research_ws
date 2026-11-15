@@ -112,6 +112,8 @@ def build_argument_parser():
     parser.add_argument("--max-translation-m", type=float, default=0.8)
     parser.add_argument("--max-yaw-deg", type=float, default=20.0)
     parser.add_argument("--yaw-bins", type=int, default=41)
+    parser.add_argument("--yaw-residual-deg", type=float, default=None)
+    parser.add_argument("--correlation-mode", choices=("legacy", "cosine"), default="legacy")
     parser.add_argument("--forward-min-m", type=float, default=-1.0)
     parser.add_argument("--forward-max-m", type=float, default=6.0)
     parser.add_argument("--left-min-m", type=float, default=-3.5)
@@ -139,6 +141,36 @@ def build_argument_parser():
     return parser
 
 
+def _load_pretrained(model, checkpoint, model_config):
+    """Transfer learned weights without overwriting new geometry or temperature."""
+    previous_config = checkpoint.get("model_config", {})
+    state = dict(checkpoint["model_state"])
+    expected_limits = model.refiner.limits.detach().clone()
+    old_limits = state["refiner.limits"].to(expected_limits)
+    changed_yaw = not torch.isclose(old_limits[2], expected_limits[2]).item()
+    state["refiner.limits"] = expected_limits
+    state["matcher.yaw_values"] = model.matcher.yaw_values.detach().clone()
+    if previous_config.get("correlation_mode", "legacy") != model_config.get("correlation_mode", "legacy"):
+        state["matcher.logit_scale"] = model.matcher.logit_scale.detach().clone()
+    model.load_state_dict(state, strict=True)
+    if changed_yaw:
+        # An old saturated +/-1 degree head must not become an immediate +/-8
+        # degree prediction. Relearn only its final yaw row; preserve translation.
+        with torch.no_grad():
+            model.refiner.pose_head[-1].weight[2].zero_()
+            model.refiner.pose_head[-1].bias[2].zero_()
+    return changed_yaw
+
+
+def _compatible_resume_config(saved, current):
+    defaults = {"yaw_residual_deg": None, "correlation_mode": "legacy"}
+    a, b = dict(defaults, **saved), dict(defaults, **current)
+    for config in (a, b):
+        if "metric_bounds" in config:
+            config["metric_bounds"] = tuple(config["metric_bounds"])
+    return a == b
+
+
 def _checkpoint_score(summary, mode):
     if mode == "translation":
         return summary["translation_rmse_m"]
@@ -157,6 +189,11 @@ def _checkpoint_score(summary, mode):
 def main(argv=None):
     """Train the model and save last/best checkpoints."""
     args = build_argument_parser().parse_args(argv)
+    if args.resume and args.pretrained_checkpoint:
+        raise ValueError("Use either --resume or --pretrained-checkpoint, not both")
+    output_dir = Path(args.output_dir)
+    if not args.resume and output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError("Use a new empty output directory; existing results will not be overwritten")
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -182,10 +219,12 @@ def main(argv=None):
         "yaw_bins": args.yaw_bins,
         "bev_height": int(sample.shape[1]),
         "bev_width": int(sample.shape[2]),
+        "yaw_residual_deg": args.yaw_residual_deg,
+        "correlation_mode": args.correlation_mode,
     }
     model = LearnedBEVOdometry(**model_config).to(device)
     if args.pretrained_checkpoint:
-        pretrained = torch.load(args.pretrained_checkpoint, map_location=device)
+        pretrained = torch.load(args.pretrained_checkpoint, map_location=device, weights_only=False)
         pretrained_config = pretrained.get("model_config", {})
         if pretrained_config and pretrained_config != model_config:
             print(
@@ -200,7 +239,8 @@ def main(argv=None):
                     }
                 )
             )
-        model.load_state_dict(pretrained["model_state"])
+        reset_yaw = _load_pretrained(model, pretrained, model_config)
+        print(json.dumps({"pretrained_yaw_head_reset": reset_yaw}))
     loss_weights = {
         "translation_weight": args.translation_weight,
         "yaw_weight": args.yaw_weight,
@@ -226,7 +266,9 @@ def main(argv=None):
     start_epoch = 0
     best_validation = float("inf")
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
+        if not _compatible_resume_config(checkpoint["model_config"], model_config):
+            raise ValueError("Resume model_config mismatch; use pretrained transfer for a new experiment")
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
         if "scheduler_state" in checkpoint:
@@ -333,12 +375,12 @@ def main(argv=None):
             "bev_config": preprocessing_metadata.get("bev_config", {}),
             "preprocessing_metadata": preprocessing_metadata,
         }
-        torch.save(checkpoint, output_dir / "last.pt")
         score = _checkpoint_score(validation_summary, args.best_score)
         if score < best_validation:
             best_validation = score
             checkpoint["best_validation"] = best_validation
             torch.save(checkpoint, output_dir / "best.pt")
+        torch.save(checkpoint, output_dir / "last.pt")
 
 
 if __name__ == "__main__":
