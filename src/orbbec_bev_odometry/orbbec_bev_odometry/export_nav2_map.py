@@ -72,6 +72,7 @@ def main(argv=None):
     parser.add_argument('--min-occupied-share', type=float, default=0.3)
     parser.add_argument('--min-free-hits', type=int, default=2)
     parser.add_argument('--title', default='')
+    parser.add_argument('--lang', choices=('zh', 'en'), default='zh', help='language of the preview text')
     args = parser.parse_args(argv)
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=False)
@@ -134,7 +135,10 @@ def main(argv=None):
     ax.legend(fontsize=7, loc='upper right')
     ax.set_xlabel('x / m')
     ax.set_ylabel('y / m')
-    ax.set_title(f"{args.title}\nNav2 栅格地图（黑=障碍，白=可通行，灰=未知），{args.resolution} m/格")
+    if args.lang == 'en':
+        ax.set_title(f"{args.title}\nNav2 occupancy grid (black = occupied, white = free, grey = unknown), {args.resolution} m/cell")
+    else:
+        ax.set_title(f"{args.title}\nNav2 栅格地图（黑=障碍，白=可通行，灰=未知），{args.resolution} m/格")
     fig.savefig(output / 'preview.png', dpi=130, bbox_inches='tight')
     print(json.dumps(stats, indent=1, ensure_ascii=False))
 

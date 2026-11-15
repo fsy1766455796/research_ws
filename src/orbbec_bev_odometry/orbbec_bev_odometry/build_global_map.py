@@ -74,7 +74,12 @@ def main(argv=None):
     parser.add_argument('--labels', default='真值参考,前端,后端')
     parser.add_argument('--combine', action='store_true', help='all sessions in one map (shared world frame)')
     parser.add_argument('--subtitle', default='（起点对齐，无回到起点）')
+    parser.add_argument('--lang', choices=('zh', 'en'), default='zh', help='language of figure text')
+    parser.add_argument('--panels', default='target,raw,optimized', help='which panels to draw, e.g. raw,optimized')
+    parser.add_argument('--no-quality', action='store_true', help='do not print map-quality numbers (e.g. no ground truth)')
     args = parser.parse_args(argv)
+    if args.lang == 'en' and args.labels == '真值参考,前端,后端':
+        args.labels = 'Reference (ground truth),Front end only,After loop closure'
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -103,9 +108,13 @@ def main(argv=None):
         grids = {p: occupancy(c, lo, shape, args.resolution, args.min_hits) for p, c in clouds.items()}
         quality = {p: map_quality(grids[p][1], grids['target'][1], lo, args.resolution) for p in ('raw', 'optimized')}
         report[f"{seg[0]['sequence']}/{segment}"] = quality
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6.5), constrained_layout=True)
+        names = ('target', 'raw', 'optimized')
+        shown = [p for p in args.panels.split(',') if p in names]
+        fig, axes = plt.subplots(1, len(shown), figsize=(6 * len(shown), 6.5), constrained_layout=True, squeeze=False)
+        axes = axes[0]
         extent = (lo[1], hi[1], lo[0], hi[0])
-        for ax, prefix, label in zip(axes, ('target', 'raw', 'optimized'), labels):
+        for ax, prefix in zip(axes, shown):
+            label = labels[names.index(prefix)]
             grid = np.log1p(grids[prefix][0])
             ax.imshow(grid, origin='lower', extent=extent, cmap='Greys', vmax=np.percentile(grid[grid > 0], 98))
             # world x = forward is drawn vertically; y = left horizontally, flipped so left is left
@@ -116,19 +125,27 @@ def main(argv=None):
                 if part:
                     ax.plot([float(r[f'{prefix}_y_m']) for r in part], [float(r[f'{prefix}_x_m']) for r in part],
                             color=colors[n % len(colors)], lw=1.2, label=name if args.combine else None)
-            if args.combine and prefix == 'target':
+            if args.combine and prefix == shown[0]:
                 ax.legend(fontsize=7, loc='best')
             if not args.combine:
                 ax.plot(0, 0, 'o', color='#2ca02c')
             ax.invert_xaxis()
             ax.set_aspect('equal')
-            q = quality.get(prefix, {})
-            sub = '' if not q else f"\n与参考地图倒角距离 {q['chamfer_m']:.2f} m，10 cm 内 {100 * q['within_10cm']:.0f}%"
+            q = {} if args.no_quality else quality.get(prefix, {})
+            if args.lang == 'en':
+                sub = '' if not q else f"\nChamfer distance to reference {q['chamfer_m']:.2f} m, {100 * q['within_10cm']:.0f}% within 10 cm"
+                ax.set_xlabel('left / m')
+                ax.set_ylabel('forward / m')
+            else:
+                sub = '' if not q else f"\n与参考地图倒角距离 {q['chamfer_m']:.2f} m，10 cm 内 {100 * q['within_10cm']:.0f}%"
+                ax.set_xlabel('左向 / m')
+                ax.set_ylabel('前向 / m')
             ax.set_title(label + sub)
-            ax.set_xlabel('左向 / m')
-            ax.set_ylabel('前向 / m')
-        where = '全部段' if args.combine else f"{seg[0]['sequence']} 片段 {segment}"
-        fig.suptitle(f"{args.title} {where}：BEV 占据拼接全局地图{args.subtitle}", y=1.04)
+        if args.lang == 'en':
+            fig.suptitle(args.title, y=1.04)
+        else:
+            where = '全部段' if args.combine else f"{seg[0]['sequence']} 片段 {segment}"
+            fig.suptitle(f"{args.title} {where}：BEV 占据拼接全局地图{args.subtitle}", y=1.04)
         fig.savefig(output / (f"map_all.png" if args.combine else f"map_{seg[0]['sequence']}_{segment}.png"),
                     dpi=140, bbox_inches='tight')
         plt.close(fig)
